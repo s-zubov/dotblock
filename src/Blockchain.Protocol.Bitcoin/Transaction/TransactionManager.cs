@@ -40,6 +40,9 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
         /// </summary>
         public static async Task<TransactionContext> CreateAsync(CoinParameters param, IBitcoinClient client, IEnumerable<TransactionInfo> items)
         {
+            if (string.Equals(param.CoinTag, "DST"))
+                return await CreateDeStreamAsync(param, client, items);
+            
             var context = new TransactionContext
                               {
                                   CoinParameters = param, 
@@ -232,6 +235,105 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
             {
                 return context;
             }
+
+            //// create the builder and build the transaction (either a client using the coins client or locally if supported).
+            await TransactionBuilder.Create(param).Build(client, context);
+
+            // seems we are done here
+            return context;
+        }
+        
+        private static async Task<TransactionContext> CreateDeStreamAsync(CoinParameters param, IBitcoinClient client,
+            IEnumerable<TransactionInfo> items)
+        {
+            const decimal feeRate = (decimal) 0.0077;
+            
+            var context = new TransactionContext
+            {
+                CoinParameters = param,
+                PreviousRawTransactions = new List<DecodedRawTransaction>(),
+                CreateRawTransaction = new CreateRawTransaction(),
+                SendItems = new List<TransactionInfo>()
+            };
+
+            foreach (var item in items)
+            {
+                context.SendItems.Add(item);
+
+                // check if receiving address is already in the transaction, this is allowed but not supported by the client.
+                if (item.SpendToAddresses.Select(s => s.PublicKey)
+                    .Intersect(item.SpendFromAddresses.Select(s => s.PublicKey)).Any())
+                {
+                    item.Fail(false, FailedReason.CannotSendToSelfUnlessChange);
+                    continue;
+                }
+
+                if (item.SpendFromAddresses.SelectMany(s => s.Transactions).None())
+                {
+                    item.Fail(false, FailedReason.NoTransactionsFound);
+                    continue;
+                }
+
+                // check if a transaction is already in use
+                if (context.CreateRawTransaction.Inputs.Any(source => item.SpendFromAddresses
+                    .SelectMany(s => s.Transactions)
+                    .Any(target => source.TransactionId == target.Hash && source.Output == target.Index)))
+                {
+                    item.Fail(true, FailedReason.TransactionInputAlreadyInUse);
+                    continue;
+                }
+
+                // check if receiving address is already in the transaction, this is allowed but not supported by the client.
+                if (context.CreateRawTransaction.Outputs
+                    .Any(source => item.SpendToAddresses.Any(target => source.Key == target.PublicKey)))
+                {
+                    item.Fail(true, FailedReason.ReceiveAddressAlreadyInOutput);
+                    continue;
+                }
+
+                if (item.SpendFromAddresses.SelectMany(s => s.Transactions).Any(t => t.ScriptPubKeyHex.IsNullOrEmpty()))
+                {
+                    item.Fail(false, FailedReason.ScriptPubKeyHexNotFound);
+                    continue;
+                }
+
+                //// get the outputs associated with the sender address
+                var spendToEnumerated = item.SpendToAddresses.ToList();
+                var spendFromEnumerated = item.SpendFromAddresses.SelectMany(s => s.Transactions).ToList();
+                
+                //// calculate the sum of inputs and outputs.
+                var inputSum = spendFromEnumerated.Select(t => t.Value).Sum();
+                var outputSum = spendToEnumerated.Select(spt => spt.Amount).Sum();
+
+                var fee = outputSum * feeRate;
+
+                var change = inputSum - outputSum;
+
+                if (change < 0)
+                {
+                    item.Fail(false, FailedReason.InvalidSum);
+                    continue;
+                }
+
+                if (item.SpendToAddresses.Any(s => s.TakeFee))
+                    item.SpendToAddresses.First(s => s.TakeFee).Amount -= fee;
+                else
+                    change -= fee;
+
+                if (change > 0)
+                    if (item.ChangeAddress.IsNullOrEmpty())
+                    {
+                        item.Fail(false, FailedReason.NoChangeAddressFound);
+                        continue;
+                    }
+
+                spendFromEnumerated.ForEach(vout => context.CreateRawTransaction.AddInput(vout.Hash, (int) vout.Index));
+                spendToEnumerated.ForEach(spt => context.CreateRawTransaction.AddOutput(spt.PublicKey, spt.Amount));
+
+                if (change > 0) context.CreateRawTransaction.AddOutput(item.ChangeAddress, change);
+            }
+
+            if (context.SendItems.All(w => w.Failed)) return context;
 
             //// create the builder and build the transaction (either a client using the coins client or locally if supported).
             await TransactionBuilder.Create(param).Build(client, context);
