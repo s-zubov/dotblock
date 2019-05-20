@@ -330,11 +330,15 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                 spendFromEnumerated.ForEach(vout => context.CreateRawTransaction.AddInput(vout.Hash, (int) vout.Index));
                 spendToEnumerated.ForEach(spt => context.CreateRawTransaction.AddOutput(spt.PublicKey, spt.Amount));
 
-                if (change > 0) context.CreateRawTransaction.AddOutput(item.ChangeAddress, change);
+                if (change > 0)
+                {
+                    context.CreateRawTransaction.AddOutput(item.ChangeAddress, change);
+                    context.CreateRawTransaction.AddInput(item.ChangeAddress, -1);
+                }
             }
 
             if (context.SendItems.All(w => w.Failed)) return context;
-
+            
             //// create the builder and build the transaction (either a client using the coins client or locally if supported).
             await TransactionBuilder.Create(param).Build(client, context);
 

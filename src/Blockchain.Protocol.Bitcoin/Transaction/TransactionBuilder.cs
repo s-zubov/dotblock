@@ -65,7 +65,7 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                           {
                               "BTC", "TRC", "GRC", "DOGE", "DASH", "RDD", "XPM", "LTC", "NMC", 
                               "QRK", "PPC", "MTR", "GB", "SHM", "CRX", "UBIQ", "ARG", "ZYD", "DLC",
-                              "STRAT", "SH"
+                              "STRAT", "SH", "DST"
                           };
 
             if (lst.Contains(param.CoinTag))
@@ -127,6 +127,11 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                     ser = new TransactionSerializerTimeStamped(param);
                 }
 
+                if (param.CoinTag == "DST")
+                {
+                    ser = new TransactionSerializerTimeStamped(param);
+                }
+
                 var builder = new TransactionBuilder(param, ser, new TransactionSigner(param, ser));
 
                 return builder;
@@ -183,9 +188,9 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
         {
             var transaction = new Transaction
             {
-                Version = parameters.TransactionVersion, 
+                Version = parameters.TransactionVersion,
                 Locktime = 0,
-                Timestamp = (int)DateTime.UtcNow.UnixTimeStampFromDateTime()
+                Timestamp = (int) DateTime.UtcNow.UnixTimeStampFromDateTime()
             };
 
             // create the inputs
@@ -194,22 +199,34 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                 {
                     Outpoint = new TransactionOutPoint
                     {
-                        Hash = input.TransactionId, 
+                        Hash = input.TransactionId,
                         Index = input.Output
-                    }, 
-                    ScriptBytes = Enumerable.Empty<byte>().ToArray(), 
+                    },
+                    ScriptBytes = Enumerable.Empty<byte>().ToArray(),
 
                     Sequence = 0xffffffff // uint.MaxValue
                 }).ToList();
+
 
             // create the output
             transaction.Outputs = rawTransaction.Outputs
                 .Select((output, index) => new TransactionOutput
                 {
-                    Index = index, 
-                    Value = this.Serializer.ValueToNum(output.Value), 
+                    Index = index,
+                    Value = this.Serializer.ValueToNum(output.Value),
                     ScriptBytes = ScriptBuilder.CreateOutputScript(Address.Create(parameters, output.Key)).GetProgram()
                 }).ToList();
+
+            var changePointer = transaction.Inputs.SingleOrDefault(p => p.Outpoint.Index == -1);
+            if (changePointer == null) return transaction;
+
+            var rawChangeOutput = rawTransaction.Outputs.Single(p => p.Key == changePointer.Outpoint.Hash);
+            var changeOutputScriptBytes = ScriptBuilder
+                .CreateOutputScript(Address.Create(parameters, rawChangeOutput.Key)).GetProgram();
+            changePointer.Outpoint.Index =
+                transaction.Outputs.Single(p => p.ScriptBytes == changeOutputScriptBytes).Index;
+            changePointer.Outpoint.Hash = "0";
+
 
             return transaction;
         }
