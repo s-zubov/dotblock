@@ -305,8 +305,6 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                 var inputSum = spendFromEnumerated.Select(t => t.Value).Sum();
                 var outputSum = spendToEnumerated.Select(spt => spt.Amount).Sum();
 
-                var fee = outputSum * feeRate;
-
                 var change = inputSum - outputSum;
 
                 if (change < 0)
@@ -316,9 +314,9 @@ namespace Blockchain.Protocol.Bitcoin.Transaction
                 }
 
                 if (item.SpendToAddresses.Any(s => s.TakeFee))
-                    item.SpendToAddresses.First(s => s.TakeFee).Amount -= fee;
+                    item.SpendToAddresses.First(s => s.TakeFee).Amount /= decimal.One + feeRate;
                 else
-                    change -= fee;
+                    change -= outputSum * feeRate;
 
                 if (change > 0)
                     if (item.ChangeAddress.IsNullOrEmpty())
